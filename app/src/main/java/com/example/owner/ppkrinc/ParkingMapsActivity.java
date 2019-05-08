@@ -59,10 +59,13 @@ public class ParkingMapsActivity
     private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 1;
 
     private DocumentReference docReference;
-    private CollectionReference colReference;
+    private DocumentSnapshot post;
+    private CollectionReference requestColReference;
+    private CollectionReference postColReference;
+    private String firstInQueue;
     private String matchDocID;
     private ListenerRegistration reg;
-    private Timestamp timestampID;
+    private Timestamp timestamp;
 
     // The geographical location where the device is currently located. That is, the last-known
     // location retrieved by the Fused Location Provider.
@@ -76,7 +79,7 @@ public class ParkingMapsActivity
                 .findFragmentById(R.id.map);
         mapFragment.getMapAsync(this);
         db = FirebaseFirestore.getInstance();
-        timestampID = Timestamp.now();
+        timestamp = Timestamp.now();
 
 
 
@@ -137,8 +140,9 @@ public class ParkingMapsActivity
         FirebaseUser currentUser = mAuth.getCurrentUser();
 
         Bundle extraLocationData = getIntent().getExtras();
+        Bundle extraMatchData = new Bundle();
 
-        Map<String, Object> location = new HashMap<>();
+        Map<String, Object>location = new HashMap<>();
 
         String activityType = extraLocationData.getString("type");
         if (activityType.equalsIgnoreCase("Post")) {
@@ -150,32 +154,41 @@ public class ParkingMapsActivity
             location.put("parkingLot", extraLocationData.get("parkingLot"));
             location.put("rideShare", extraLocationData.getBoolean("rideShare"));
             location.put("userID", currentUser.getUid());
+            location.put("userName", currentUser.getDisplayName());
+
+            location.put("matchID", "");
+            location.put("matchUserID", "");
+            location.put("matchUserName", "");
+
         } else {
+
             location.put("lat", lastKnownLocation.getLatitude());
             location.put("long", lastKnownLocation.getLongitude());
             location.put("matchStatus", 0);
             location.put("rideShare", extraLocationData.getBoolean("rideShare"));
             location.put("userID", currentUser.getUid());
+            location.put("userName", currentUser.getDisplayName());
+
 
         }
 
-        location.put("timestamp", timestampID);
+        location.put("timeStamp", timestamp);
 
 
-        docReference = db.collection("location" + extraLocationData.getString("type")).document(timestampID.toString());
-        docReference.set(location);
+        db.collection("location" + extraLocationData.getString("type")).document().set(location);
+        //docReference.set(location);
+
         if (docReference.getId() != null) {
             Toast.makeText(ParkingMapsActivity.this,
                     "" + docReference.getId(),
                     Toast.LENGTH_SHORT).show();
         }
 
+        requestColReference = db.collection("locationRequest");
+        postColReference = db.collection("locationPost");
 
         if (activityType.equalsIgnoreCase("Request")) {
             //waitForPosting();
-            colReference = db.collection("locationPost");
-            //Query postingQuery = colReference.orderBy("timestamp").limit(1);
-            //colReference
 
             ListenerRegistration reg = db.collection("locationPost").addSnapshotListener(new EventListener<QuerySnapshot>() {
 
@@ -190,83 +203,113 @@ public class ParkingMapsActivity
                         return;
                     }
 
-                    if (queryDocumentSnapshots != null) {
-                        Toast.makeText(ParkingMapsActivity.this,
-                                "success " +queryDocumentSnapshots.size(),
-                                Toast.LENGTH_SHORT).show();
+                    if (queryDocumentSnapshots != null && queryDocumentSnapshots.size() > 0){
+                        Query requestQuery = requestColReference.orderBy("timeStamp").limit(1);
 
-                        List<DocumentSnapshot> query = queryDocumentSnapshots.getDocuments();
-
-                        for(int index = 0; index < query.size(); ){
-                            if(query.get(index).get("matchStatus").toString().equalsIgnoreCase("1")){
-                                query.remove(index);
+                        requestQuery.get().addOnCompleteListener(new OnCompleteListener<QuerySnapshot>() {
+                            @Override
+                            public void onComplete(@NonNull Task<QuerySnapshot> task) {
+                                if (task.isSuccessful()) {
+                                    for (QueryDocumentSnapshot document : task.getResult()) {
+                                        firstInQueue = document.getString("userID");
+                                        Log.d(TAG, document.getId() + " => " + document.getData());
+                                    }
+                                } else {
+                                    Log.d(TAG, "Error getting documents: ", task.getException());
+                                }
                             }
-                            else{
-                                index++;
+                        });
+
+                        if(firstInQueue == currentUser.getUid()){
+
+                            if (queryDocumentSnapshots != null) {
+                                Toast.makeText(ParkingMapsActivity.this,
+                                        "success " +queryDocumentSnapshots.size(),
+                                        Toast.LENGTH_SHORT).show();
+
+                                Query postQuery = queryDocumentSnapshots.getQuery().orderBy("timeStamp").limit(1);
+
+
+
+                                postQuery.get().addOnCompleteListener(new OnCompleteListener<QuerySnapshot>() {
+                                    @Override
+                                    public void onComplete(@NonNull Task<QuerySnapshot> task) {
+                                        if (task.isSuccessful()) {
+                                            for (QueryDocumentSnapshot document : task.getResult()) {
+                                                post = document;
+                                                Log.d(TAG, document.getId() + " => " + document.getData());
+                                            }
+                                        } else {
+                                            Log.d(TAG, "Error getting documents: ", task.getException());
+                                        }
+                                    }
+                                });
+
+                                if(post != null){
+
+                                    Toast.makeText(ParkingMapsActivity.this,
+                                            "match found",
+                                            Toast.LENGTH_SHORT).show();
+                                    Map<String, Object> newLoc;
+
+                                    newLoc = post.getData();
+
+                                    Toast.makeText(ParkingMapsActivity.this,
+                                            "" + post.getId(),
+                                            Toast.LENGTH_SHORT).show();
+
+                                    //Notifies Posting User
+                                    newLoc.put("matchStatus",1);
+                                    newLoc.put("matchUserID", currentUser.getUid());
+                                    newLoc.put("matchUserName", currentUser.getDisplayName());
+
+                                    postColReference.document(post.getId()).set(newLoc);
+
+
+                                    Intent intent = new Intent(getApplicationContext(), ConfirmationPage.class);
+                                    Bundle extraMatchData = new Bundle();
+
+                                    extraMatchData.putString("type", "Request");
+                                    extraMatchData.putString("matchUserName", post.getString("userName"));
+                                    extraMatchData.putString("matchUserID", post.getString("userID"));
+                                    extraMatchData.putString("userID", currentUser.getUid());
+                                    extraMatchData.putString("userName", currentUser.getDisplayName());
+
+                                    intent.putExtras(extraMatchData);
+
+                                    startActivity(intent);
+
+                                    Toast.makeText(ParkingMapsActivity.this,
+                                            "success ",
+                                            Toast.LENGTH_SHORT).show();
+
+                                }
+
+                                /**
+                                 List<DocumentSnapshot> query = queryDocumentSnapshots.getDocuments();
+
+                                 for(int index = 0; index < query.size(); ){
+                                 if(query.get(index).get("matchStatus").toString().equalsIgnoreCase("1")){
+                                 query.remove(index);
+                                 }
+                                 else{
+                                 index++;
+                                 }
+                                 }
+
+
+                                 **/
                             }
                         }
-
-                        Toast.makeText(ParkingMapsActivity.this,
-                                "" + query.size(),
-                                Toast.LENGTH_SHORT).show();
-                        Map<String, Object> newLoc;
-                        for(DocumentSnapshot doc : query){
-                            newLoc = doc.getData();
-                            Toast.makeText(ParkingMapsActivity.this,
-                                    "" + doc.getId(),
-                                    Toast.LENGTH_SHORT).show();
-                            newLoc.put("matchStatus",1);
-                            colReference.document(doc.getId()).set(newLoc);
-                            Intent intent = new Intent(getApplicationContext(), ConfirmationPage.class);
-                            Bundle extraMatchData = new Bundle();
-
-                            extraMatchData.putString("type", "Request");
-                            extraMatchData.putString("requestID", timestampID.toString());
-                            extraMatchData.putString("postID", doc.getId());
-
-                            intent.putExtras(extraMatchData);
-
-                            startActivity(intent);
-                            break;
-                        }
-
-                        Toast.makeText(ParkingMapsActivity.this,
-                                "success ",
-                                Toast.LENGTH_SHORT).show();
-
-
                     }
-                    /*
-                    int i = 0;
-                    for(DocumentChange doc : queryDocumentSnapshots.getDocumentChanges()){
-                        switch (doc.getType()) {
-                            case ADDED:
-                                Toast.makeText(ParkingMapsActivity.this,
-                                        "success " + i,
-                                        Toast.LENGTH_SHORT).show();
-                                i++;
-                                break;
-                            case MODIFIED:
-                                Toast.makeText(ParkingMapsActivity.this,
-                                        "bummer",
-                                        Toast.LENGTH_SHORT).show();
-                                break;
-                            case REMOVED:
-                                Toast.makeText(ParkingMapsActivity.this,
-                                        "bummer",
-                                        Toast.LENGTH_SHORT).show();
-                                break;
-                        }
-                    }
-                    */
                 }
             });
 
             //reg.remove();
         }
         else{
-            //waitForSearch();
 
+            //waitForSearch();
             docReference.addSnapshotListener(new EventListener<DocumentSnapshot>() {
                 @Override
                 public void onEvent(@Nullable DocumentSnapshot documentSnapshot, @Nullable FirebaseFirestoreException e) {
@@ -284,30 +327,31 @@ public class ParkingMapsActivity
                                 "success " ,
                                 Toast.LENGTH_SHORT).show();
 
-                            Intent intent = new Intent(getApplicationContext(), ConfirmationPage.class);
-                            Bundle extraMatchData = new Bundle();
+                        Intent intent = new Intent(getApplicationContext(), ConfirmationPage.class);
+                        Bundle extraMatchData = new Bundle();
 
-                            extraMatchData.putString("type", "Post");
-                            extraMatchData.putString("postID", timestampID.toString());
+                        extraMatchData.putString("type", "Post");
+                        extraMatchData.putString("matchUserID", docReference.get().getResult().getString("matchUserID"));
+                        extraMatchData.putString("matchUserName", docReference.get().getResult().getString("matchUserName"));
+                        extraMatchData.putString("userID", currentUser.getUid());
+                        extraMatchData.putString("userName", currentUser.getDisplayName());
 
-                            intent.putExtras(extraMatchData);
+                        intent.putExtras(extraMatchData);
 
-                            startActivity(intent);
+                        startActivity(intent);
                     }
                 }
             });
 
         }
             /*
-            colReference.addSnapshotListener(new EventListener<QuerySnapshot>() {
+            postColReference.addSnapshotListener(new EventListener<QuerySnapshot>() {
                 @Override
                 public void onEvent(@Nullable QuerySnapshot queryDocumentSnapshots, @Nullable FirebaseFirestoreException e) {
                     if(queryDocumentSnapshots != null && queryDocumentSnapshots.size()>0){
                         Toast.makeText(ParkingMapsActivity.this,
                                 queryDocumentSnapshots.size(),
                                 Toast.LENGTH_SHORT).show();
-
-
                     Query postingQuery = queryDocumentSnapshots.getQuery().orderBy("timestamp");
                     postingQuery.get().addOnCompleteListener(new OnCompleteListener<QuerySnapshot>() {
                         @Override
@@ -318,7 +362,7 @@ public class ParkingMapsActivity
                                     newLoc = document.getData();
                                     if(newLoc.get("matchStatus").toString().equalsIgnoreCase("1")) {
                                         newLoc.put("matchStatus",1);
-                                        colReference.document(document.getId()).set(newLoc);
+                                        postColReference.document(document.getId()).set(newLoc);
                                         Toast.makeText(ParkingMapsActivity.this,
                                                 "" + document.getData().get("matchStatus") + ((Timestamp)document.getData().get("timestamp")),
                                                 Toast.LENGTH_SHORT).show();
@@ -333,10 +377,10 @@ public class ParkingMapsActivity
     }
 
     private void waitForPosting(){
-        colReference = db.collection("locationPost");
-        //Query postingQuery = colReference.orderBy("timestamp").limit(1);
+        postColReference = db.collection("locationPost");
+        //Query postingQuery = postColReference.orderBy("timestamp").limit(1);
 
-        colReference.addSnapshotListener(new EventListener<QuerySnapshot>() {
+        postColReference.addSnapshotListener(new EventListener<QuerySnapshot>() {
             @Override
             public void onEvent(@Nullable QuerySnapshot queryDocumentSnapshots, @Nullable FirebaseFirestoreException e) {
                 if(queryDocumentSnapshots != null && queryDocumentSnapshots.size()>0){
@@ -355,7 +399,7 @@ public class ParkingMapsActivity
                                     newLoc = document.getData();
                                     if(newLoc.get("matchStatus").toString().equalsIgnoreCase("1")) {
                                         newLoc.put("matchStatus",1);
-                                        colReference.document(document.getId()).set(newLoc);
+                                        postColReference.document(document.getId()).set(newLoc);
                                         Toast.makeText(ParkingMapsActivity.this,
                                                 "" + document.getData().get("matchStatus") + ((Timestamp)document.getData().get("timestamp")),
                                                 Toast.LENGTH_SHORT).show();
@@ -371,8 +415,7 @@ public class ParkingMapsActivity
         });
 
         /*
-        Query postingQuery = colReference.orderBy("timestamp");
-
+        Query postingQuery = postColReference.orderBy("timestamp");
         postingQuery.get().addOnCompleteListener(new OnCompleteListener<QuerySnapshot>() {
             @Override
             public void onComplete(@NonNull Task<QuerySnapshot> task) {
@@ -382,7 +425,7 @@ public class ParkingMapsActivity
                         newLoc = document.getData();
                         if(newLoc.get("matchStatus").toString().equalsIgnoreCase("1")) {
                             newLoc.put("matchStatus",1);
-                            colReference.document(document.getId()).set(newLoc);
+                            postColReference.document(document.getId()).set(newLoc);
                             Toast.makeText(ParkingMapsActivity.this,
                                     "" + document.getData().get("matchStatus") + ((Timestamp)document.getData().get("timestamp")),
                                     Toast.LENGTH_SHORT).show();
